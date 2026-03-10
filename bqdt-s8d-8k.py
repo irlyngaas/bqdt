@@ -44,8 +44,9 @@ def ensure_cpu(arr):
 # 1. 优化后的 GPU 合并器 (Our Merge)
 # -------------------------
 class GPUQuadTreeMerger:
-    def __init__(self, image_path, min_size=2):
+    def __init__(self, image_path, min_size=2, patch_size=(16,16)):
         self.min_size = min_size
+        self.patch_size = patch_size
         self.pil = Image.open(image_path).convert("RGB")
         self.orig_w, self.orig_h = self.pil.size
         
@@ -265,6 +266,7 @@ class GPUQuadTreeMerger:
         self._save_visualization(alive, visualize_path)
         border_mask = self._border_mask(alive, end_leaves)
         regions = self._detect_regions(border_mask)
+        serialized_input = self._serialize(regions)
         return t_total
 
     def _save_visualization(self, alive, filename):
@@ -365,6 +367,30 @@ class GPUQuadTreeMerger:
             })
 
         return regions
+
+    def _serialize(self, regions):
+        h2,w2 = self.patch_size
+        c2 = self.img.shape[2]
+        serialize = []
+        for i in range(len(regions)):
+            h1, w1, = regions[i]["height"], regions[i]["width"]
+            assert h1==w1, "Need squared input."
+
+            h1_ = xp.linspace(0,h1,h1)
+            w1_ = xp.linspace(0,w1,w1)
+            interp_fct_list = []
+            for j in range(c2):
+                interp_fct_list.append(RegularGridInterpolator(points=[h1_,w1_], values=self.img[regions[i]["x0"]:regions[i]["x1"]+1,regions[i]["y0"]:regions[i]["y1"]+1,j]))
+
+            patch_ = xp.zeros([h2,w2,c2])
+            h2_ = xp.linspace(0,h1,h2)
+            w2_ = xp.linspace(0,w1,w2)
+            H2_, W2_ = xp.meshgrid(h2_, w2_, indexing='ij')
+            query_points = xp.vstack([H2_.ravel(),W2_.ravel()]).T
+            for j in range(c2):
+                patch_[:,:,j] = interp_fct_list[j](query_points).reshape(H2_.shape)
+            serialize.append(patch_)
+        return serialize
 
 # -------------------------
 # 2. 优化后的 Heap Baseline (Optimized Heap)
@@ -542,7 +568,8 @@ if __name__ == "__main__":
     print("="*60)
 
     # 1. Run Optimized Merge (Our Method)
-    merger = GPUQuadTreeMerger(img_path, min_size=1)
+    #patch_size is the uniform patch size for serialize
+    merger = GPUQuadTreeMerger(img_path, min_size=1, patch_size=(16,16))
     t_merge = merger.run_merge(start_leaves=None, end_leaves=TARGET_LEAVES, batch_k=8192, visualize_path="result_merge.png")
 
     ## 2. Run Optimized Baseline (Heap)
