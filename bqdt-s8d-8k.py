@@ -224,6 +224,8 @@ class GPUQuadTreeMerger:
             current_leaves -= 3 * merges_count
             
             # 不再需要手动的 batch 增长策略，自动递减
+        print("Target End Leaves: ", end_leaves)
+        print("Actual End Leaves: ", current_leaves)
 
         if GPU: cp.cuda.Device().synchronize()
         t_total = time.perf_counter() - t_start
