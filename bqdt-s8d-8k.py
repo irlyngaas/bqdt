@@ -198,17 +198,46 @@ class GPUQuadTreeMerger:
             
             # 3. 应用合并 (GPU Indexing)
             merges_count = 0
-            
+            level_break = False
             for lvl in range(1, self.max_level + 1):
                 # GPU Mask
                 mask = (selected_meta[:, 0] == lvl)
                 
                 rows = selected_meta[mask, 1] 
                 cols = selected_meta[mask, 2] 
+
+                mc = merges_count + rows.shape[0]
+                cl = current_leaves -3*mc
+                if cl < end_leaves:
+                    cl = current_leaves -3*merges_count
+                    partial_level = lvl
+                    level_break = True
+                    partial_index = int((cl - end_leaves)/3)
+                    break
                 
                 if rows.size == 0: continue
 
                 # 更新 Alive 表
+                alive[lvl][rows, cols] = True
+                
+                tgt = alive[lvl-1]
+                r2 = rows * 2
+                c2 = cols * 2
+                tgt[r2, c2] = False
+                tgt[r2+1, c2] = False
+                tgt[r2, c2+1] = False
+                tgt[r2+1, c2+1] = False
+                
+                merges_count += rows.shape[0]
+                cl = current_leaves -3*mc
+                if cl == end_leaves:
+                    break
+            if level_break: #Perform a partial level break to get exact amount of end leaves
+                mask = (selected_meta[:, 0] == partial_level)
+                rows = selected_meta[mask, 1] 
+                rows = rows[:partial_index]
+                cols = selected_meta[mask, 2] 
+                cols = cols[:partial_index]
                 alive[lvl][rows, cols] = True
                 
                 tgt = alive[lvl-1]
@@ -418,7 +447,13 @@ if __name__ == "__main__":
     img_path = "bqdt-test.jpg"
     
     # 设定目标叶子节点数量
-    TARGET_LEAVES = 131072
+    #TARGET_LEAVES needs to be some number such that n is a Natural Number and 3*n+1, here n=43690 = 131071
+    n = 43690
+    TARGET_LEAVES = 3*n + 1
+
+    #This number doesn't work since it doesn't 
+    #TARGET_LEAVES = 131072
+    
     
     print("="*60)
     print(f"Benchmark Start. Target Leaves: {TARGET_LEAVES}")
