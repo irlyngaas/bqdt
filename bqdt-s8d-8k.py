@@ -4,6 +4,7 @@ import math
 import heapq
 import numpy as np
 from PIL import Image, ImageDraw
+import matplotlib.pyplot as plt
 
 # 尝试导入 CuPy
 try:
@@ -260,6 +261,7 @@ class GPUQuadTreeMerger:
         t_total = time.perf_counter() - t_start
         print(f"[Merge Done] Time: {t_total:.4f}s (Iterations: {iter_count})")
         self._save_visualization(alive, visualize_path)
+        border_mask = self._border_mask(alive, end_leaves)
         return t_total
 
     def _save_visualization(self, alive, filename):
@@ -289,6 +291,40 @@ class GPUQuadTreeMerger:
         
         out.crop((0, 0, self.orig_w, self.orig_h)).save(filename)
         print(f"[Visualization] Saved to {filename}")
+
+    def _border_mask(self, alive, end_leaves, save_border_mask=True):
+    #On AMD cupy has bug when size > 4096, should be tested on NVIDIA GPU
+        out = xp.full((self.orig_h_pad, self.orig_w_pad), False)
+        for level in reversed(range(len(alive))):
+            bs = self.min_size * (2 ** level)
+            
+            if bs < 2: continue
+            
+            coords = xp.argwhere(alive[level])
+            
+            if len(coords) == 0: 
+                continue
+            else: 
+                for r, c in coords:
+                    x0, y0 = r * bs, c * bs
+
+                    if x0 == 0:
+                        out[x0:x0+1, y0:y0+bs] = True
+                    else:
+                        out[x0-1:x0, y0:y0+bs] = True
+                    out[x0+bs-1:x0+bs, y0:y0+bs] = True
+                    if y0 == 0:
+                        out[x0:x0+bs, y0:y0+1] = True
+                    else:
+                        out[x0:x0+bs, y0-1:y0] = True
+                    out[x0:x0+bs, y0+bs-1:y0+bs] = True
+        if save_border_mask:
+            out_cpu = xp.asnumpy(out)
+            out_cpu = out_cpu.astype(np.uint8)
+            plt.imshow(out_cpu)
+            plt.colorbar()
+            plt.savefig("border_mask.png")
+        return out
 
 # -------------------------
 # 2. 优化后的 Heap Baseline (Optimized Heap)
@@ -445,10 +481,16 @@ if __name__ == "__main__":
 
     # 请确保此处图片路径正确
     img_path = "bqdt-test.jpg"
+    img = Image.open(img_path)
+    new_size = (2048,2048)
+    resized_img = img.resize(new_size, Image.LANCZOS)
+    resized_img.save("bqdt-test_resize.jpg")
+    img_path = "bqdt-test_resize.jpg"
     
     # 设定目标叶子节点数量
     #TARGET_LEAVES needs to be some number such that n is a Natural Number and 3*n+1, here n=43690 = 131071
-    n = 43690
+    #n = 43690
+    n = 100
     TARGET_LEAVES = 3*n + 1
 
     #This number doesn't work since it doesn't 
