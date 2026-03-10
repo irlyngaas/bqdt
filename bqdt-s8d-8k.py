@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt
 # 尝试导入 CuPy
 try:
     import cupy as cp
+    from cupyx.scipy import ndimage
+    from cupyx.scipy.interpolate import RegularGridInterpolator
     GPU = True
     xp = cp
     print("[System] Using CuPy (GPU).")
@@ -262,6 +264,7 @@ class GPUQuadTreeMerger:
         print(f"[Merge Done] Time: {t_total:.4f}s (Iterations: {iter_count})")
         self._save_visualization(alive, visualize_path)
         border_mask = self._border_mask(alive, end_leaves)
+        regions = self._detect_regions(border_mask)
         return t_total
 
     def _save_visualization(self, alive, filename):
@@ -325,6 +328,43 @@ class GPUQuadTreeMerger:
             plt.colorbar()
             plt.savefig("border_mask.png")
         return out
+
+    def _detect_regions(self, border_mask, print_regions=False):
+        interior = ~border_mask
+        labeled, num_features = ndimage.label(interior)
+        regions = []
+        if print_regions:
+            print("x0, x1, y0, y1, h, w, cx, cy")
+        for region_id in range(1, num_features + 1):
+            ys, xs = xp.where(labeled == region_id)
+
+            x0, x1 = int(xs.min()), int(xs.max())
+            if x0 == 1:
+                x0 = x0-1
+            x1 = x1+1
+
+            y0, y1 = int(ys.min()), int(ys.max())
+            if y0 == 1:
+                y0 = y0-1
+            y1 = y1+1
+            w = x1 - x0 + 1
+            h = y1 - y0 + 1
+            cx = (x0 + x1) / 2.0
+            cy = (y0 + y1) / 2.0
+            if print_regions:
+                print(x0, x1, y0, y1, h, w, cx, cy)
+            regions.append({
+                            "x0": y0,
+                            "x1": y1,
+                            "y0": x0,
+                            "y1": x1,
+                            "height": h,
+                            "width": w,
+                            "cx": cx,
+                            "cy": cy,
+            })
+
+        return regions
 
 # -------------------------
 # 2. 优化后的 Heap Baseline (Optimized Heap)
