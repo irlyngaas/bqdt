@@ -26,8 +26,8 @@ except ImportError:
 def pad_to_multiple(arr, block):
     """确保数组尺寸能被 block 整除"""
     h, w, c = arr.shape
-    pad_h = (block - (h % block)) % block
-    pad_w = (block - (w % block)) % block
+    pad_h = (block[0] - (h % block[0])) % block[0]
+    pad_w = (block[1] - (w % block[1])) % block[1]
     if pad_h == 0 and pad_w == 0:
         return arr, (h, w)
     # 使用 xp.pad (GPU if avail)
@@ -45,22 +45,43 @@ def ensure_cpu(arr):
 # -------------------------
 class GPUQuadTreeMerger:
     def __init__(self, image_path, min_size=2, patch_size=(16,16)):
-        self.min_size = min_size
         self.patch_size = patch_size
+    #1st Position is Width, 2nd Position is Height
         self.pil = Image.open(image_path).convert("RGB")
         self.orig_w, self.orig_h = self.pil.size
         
         # 原始数据转为 array
+        #After moving to array Height is in 1st position and Width is in 2nd pos
         arr = np.array(self.pil)
         # 移至 GPU
         self.img = xp.array(arr) if GPU else arr
         self.H, self.W = self.img.shape[0], self.img.shape[1]
+
+        if self.H == self.W:
+            max_blocks = self.H // min_size
+            img_size_ratio = 1
+            self.min_size = []
+            self.min_size.append(min_size)
+            self.min_size.append(min_size)
+        elif self.H > self.W:
+            img_size_ratio = int(self.H/self.W)
+            max_blocks = self.W // min_size
+            self.min_size = []
+            self.min_size.append(min_size*img_size_ratio)
+            self.min_size.append(min_size)
+        elif self.H < self.W:
+            img_size_ratio = int(self.W/self.H)
+            max_blocks = self.H // min_size
+            self.min_size = []
+            self.min_size.append(min_size)
+            self.min_size.append(min_size*img_size_ratio)
         
         # 计算层级
-        max_blocks = min(self.H // self.min_size, self.W // self.min_size)
         self.max_level = int(math.floor(math.log2(max_blocks))) if max_blocks >= 1 else 0
         
-        final_block = self.min_size * (2 ** self.max_level)
+        final_block = []
+        final_block.append(self.min_size[0] * (2 ** self.max_level))
+        final_block.append(self.min_size[1] * (2 ** self.max_level))
         self.img, (self.orig_h_pad, self.orig_w_pad) = pad_to_multiple(self.img, final_block)
         self.Hp, self.Wp = self.img.shape[0], self.img.shape[1]
 
@@ -82,23 +103,23 @@ class GPUQuadTreeMerger:
     def _compute_level_stats(self, block_size):
         img = self.img
         Hp, Wp = img.shape[0], img.shape[1]
-        gh, gw = Hp // block_size, Wp // block_size
+        gh, gw = Hp // block_size[0], Wp // block_size[1]
         
         # (gh, block, gw, block, 3) -> (gh, gw, block, block, 3)
-        reshaped = img.reshape(gh, block_size, gw, block_size, 3).transpose(0, 2, 1, 3, 4)
+        reshaped = img.reshape(gh, block_size[0], gw, block_size[1], 3).transpose(0, 2, 1, 3, 4)
         
         # GPU 计算
         means = xp.mean(reshaped, axis=(2, 3))
         # Var 计算
         vars_ = xp.var(reshaped, axis=(2, 3))
-        sse = xp.sum(vars_, axis=2) * (block_size * block_size)
+        sse = xp.sum(vars_, axis=2) * (block_size[0] * block_size[1])
         
         # 关键修改：**不调用 .get()**，保持在 GPU 上
         return means.astype(xp.uint8), sse
 
     def _precompute_all_levels(self):
         for l in range(self.max_level + 1):
-            bs = self.min_size * (2 ** l)
+            bs = (self.min_size[0] * (2 ** l), self.min_size[1] * (2 ** l))
             means_l, sse_l = self._compute_level_stats(bs)
             self.means.append(means_l)
             self.errors.append(sse_l)
@@ -292,9 +313,13 @@ class GPUQuadTreeMerger:
         
         # 从高层向下绘制
         for level in reversed(range(len(alive))):
-            bs = self.min_size * (2 ** level)
+            #bs = self.min_size * (2 ** level)
+            bs = (self.min_size[0] * (2 ** level), self.min_size[1] * (2 ** level))
+            #bs = []
+            #bs.append(self.min_size[0] * (2 ** level)) 
+            #bs.append(self.min_size[1] * (2 ** level))
             
-            if bs <= 2: continue
+            if bs[0] < self.min_size[0] or bs[1] < self.min_size[1]: continue
             
             alive_cpu = ensure_cpu(alive[level])
             coords = np.argwhere(alive_cpu)
@@ -302,8 +327,8 @@ class GPUQuadTreeMerger:
             if len(coords) == 0: continue
             
             for r, c in coords:
-                x0, y0 = c * bs, r * bs
-                draw.rectangle([x0, y0, x0 + bs, y0 + bs], fill=None, outline=grid_color)
+                x0, y0 = c * bs[1], r * bs[0]
+                draw.rectangle([x0, y0, x0 + bs[1], y0 + bs[0]], fill=None, outline=grid_color)
         
         out.crop((0, 0, self.orig_w, self.orig_h)).save(filename)
         print(f"[Visualization] Saved to {filename}")
@@ -312,9 +337,9 @@ class GPUQuadTreeMerger:
     #On AMD cupy has bug when size > 4096, should be tested on NVIDIA GPU
         out = xp.full((self.orig_h_pad, self.orig_w_pad), False)
         for level in reversed(range(len(alive))):
-            bs = self.min_size * (2 ** level)
+            bs = (self.min_size[0] * (2 ** level), self.min_size[1] * (2 ** level))
             
-            if bs < 2: continue
+            if bs[0] < self.min_size[0] or bs[1] < self.min_size[1]: continue
             
             coords = xp.argwhere(alive[level])
             
@@ -322,18 +347,18 @@ class GPUQuadTreeMerger:
                 continue
             else: 
                 for r, c in coords:
-                    x0, y0 = r * bs, c * bs
+                    x0, y0 = r * bs[0], c * bs[1]
 
                     if x0 == 0:
-                        out[x0:x0+1, y0:y0+bs] = True
+                        out[x0:x0+1, y0:y0+bs[1]] = True
                     else:
-                        out[x0-1:x0, y0:y0+bs] = True
-                    out[x0+bs-1:x0+bs, y0:y0+bs] = True
+                        out[x0-1:x0, y0:y0+bs[1]] = True
+                    out[x0+bs[0]-1:x0+bs[0], y0:y0+bs[1]] = True
                     if y0 == 0:
-                        out[x0:x0+bs, y0:y0+1] = True
+                        out[x0:x0+bs[0], y0:y0+1] = True
                     else:
-                        out[x0:x0+bs, y0-1:y0] = True
-                    out[x0:x0+bs, y0+bs-1:y0+bs] = True
+                        out[x0:x0+bs[0], y0-1:y0] = True
+                    out[x0:x0+bs[0], y0+bs[1]-1:y0+bs[1]] = True
         if save_border_mask:
             out_cpu = xp.asnumpy(out)
             out_cpu = out_cpu.astype(np.uint8)
@@ -385,7 +410,7 @@ class GPUQuadTreeMerger:
         serialize = []
         for i in range(len(regions)):
             h1, w1, = regions[i]["height"], regions[i]["width"]
-            assert h1==w1, "Need squared input."
+            #assert h1==w1, "Need squared input."
 
             h1_ = xp.linspace(0,h1,h1)
             w1_ = xp.linspace(0,w1,w1)
@@ -580,7 +605,15 @@ if __name__ == "__main__":
     # 请确保此处图片路径正确
     img_path = "bqdt-test.jpg"
     img = Image.open(img_path)
+    #Square Case H=W
     new_size = (2048,2048)
+
+    #Rectangular Case H>W
+    #new_size = (1024,2048)
+
+    #Rectangular Case H<W
+    #new_size = (2048,1024)
+    #1st Position is Width, 2nd Position is Height
     resized_img = img.resize(new_size, Image.LANCZOS)
     resized_img.save("bqdt-test_resize.jpg")
     img_path = "bqdt-test_resize.jpg"
@@ -601,7 +634,7 @@ if __name__ == "__main__":
 
     # 1. Run Optimized Merge (Our Method)
     #patch_size is the uniform patch size for serialize
-    merger = GPUQuadTreeMerger(img_path, min_size=1, patch_size=(16,16))
+    merger = GPUQuadTreeMerger(img_path, min_size=2, patch_size=(16,16))
     t_merge = merger.run_merge(start_leaves=None, end_leaves=TARGET_LEAVES, batch_k=8192, visualize_path="result_merge.png")
 
     ## 2. Run Optimized Baseline (Heap)
