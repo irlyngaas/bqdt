@@ -267,6 +267,14 @@ class GPUQuadTreeMerger:
         border_mask = self._border_mask(alive, end_leaves)
         regions = self._detect_regions(border_mask)
         serialized_input = self._serialize(regions)
+        deserialize_output = self._deserialize(serialized_input, regions)
+        out_data = xp.zeros((self.orig_h, self.orig_w, 3), dtype=np.uint8)
+        for i in range(len(deserialize_output)):
+            out_data[regions[i]["x0"]:regions[i]["x1"]+1,regions[i]["y0"]:regions[i]["y1"]+1,:] = deserialize_output[i]
+        np_out_data = xp.asnumpy(out_data)
+        np_out_data = np_out_data[:self.orig_h_pad, :self.orig_w_pad, :]
+        image = Image.fromarray(np_out_data, 'RGB')
+        image.save('deserialize_image.jpg')
         return t_total
 
     def _save_visualization(self, alive, filename):
@@ -391,6 +399,27 @@ class GPUQuadTreeMerger:
                 patch_[:,:,j] = interp_fct_list[j](query_points).reshape(H2_.shape)
             serialize.append(patch_)
         return serialize
+
+    def _deserialize(self, serialized_input, regions):
+        c1 = self.img.shape[2]
+        deserialize = []
+        for i in range(len(serialized_input)):
+            h1, w1, = self.patch_size[0], self.patch_size[1]
+            h1_ = xp.linspace(0,h1,h1)
+            w1_ = xp.linspace(0,w1,w1)
+
+            interp_fct_list = []
+            for j in range(c1):
+                interp_fct_list.append(RegularGridInterpolator(points=[h1_,w1_], values=serialized_input[i][:,:,j]))
+            patch = xp.zeros([regions[i]["height"],regions[i]["width"],c1])
+            h2_ = xp.linspace(0,h1,regions[i]["height"])
+            w2_ = xp.linspace(0,w1,regions[i]["width"])
+            H2_, W2_ = xp.meshgrid(h2_, w2_, indexing='ij')
+            query_points = xp.vstack([H2_.ravel(),W2_.ravel()]).T
+            for j in range(c1):
+                patch[:,:,j] = interp_fct_list[j](query_points).reshape(H2_.shape)
+            deserialize.append(patch)
+        return deserialize
 
 # -------------------------
 # 2. 优化后的 Heap Baseline (Optimized Heap)
