@@ -268,10 +268,13 @@ class GPUQuadTreeMerger:
         regions = self._detect_regions(border_mask)
         serialized_input = self._serialize(regions)
         deserialize_output = self._deserialize(serialized_input, regions)
+
+        #Move deserialized data back to image space
         out_data = xp.zeros((self.orig_h, self.orig_w, 3), dtype=np.uint8)
         for i in range(len(deserialize_output)):
             out_data[regions[i]["x0"]:regions[i]["x1"]+1,regions[i]["y0"]:regions[i]["y1"]+1,:] = deserialize_output[i]
         np_out_data = xp.asnumpy(out_data)
+        #Remove Padded data if necessary
         np_out_data = np_out_data[:self.orig_h_pad, :self.orig_w_pad, :]
         image = Image.fromarray(np_out_data, 'RGB')
         image.save('deserialize_image.jpg')
